@@ -23,6 +23,10 @@ var EventEmitter = require('events').EventEmitter;
 
 /**
  * Create a Manatee client.
+ *
+ * @constructor
+ * @augments EventEmitter
+ *
  * @param {object} options Manatee options.
  * @param {Bunyan} [options.log] Bunyan logger.
  * @param {string} options.path ZK election path of the shard.
@@ -34,8 +38,19 @@ var EventEmitter = require('events').EventEmitter;
  * @param {number} options.zk.timeout Time to wait before timing out connect
  * attempt in ms.
  *
+ * @throws {Error} If the options object is malformed.
+ *
+ * @fires error If there is an error creating the ZKClient.
+ * @fires topology When the topology has changed, in the form of an array of
+ * Postgres URLS. e.g  ["tcp://postgres@127.0.0.1:30003/postgres",
+ * "tcp://postgres@127.0.0.1:20003/postgres",
+ * "tcp://postgres@127.0.0.1:10003/postgres"], where the first element is the
+ * primary, the second element is the sync slave, and the third and additional
+ * elements are the async slaves.
+ * @fires ready When the client is ready and conneted.
+ *
  */
-function Client(options) {
+function Manatee(options) {
     assert.object(options, 'options');
     assert.optionalObject(options.log, 'options.log');
     assert.string(options.path, 'options.path');
@@ -44,24 +59,29 @@ function Client(options) {
     var self = this;
     EventEmitter.call(this);
 
+    /** @type {Bunyan} The bunyan log object */
     this._log = null;
+
     if (options.log) {
         self._log = options.log.child();
     } else {
         self._log = bunyan.createLogger({
             level: (process.env.LOG_LEVEL || 'info'),
-            //level: (process.env.LOG_LEVEL || 'debug'),
             name: 'mantee-client',
             serializers: {
                 err: bunyan.stdSerializers.err
-            },
-            // always turn source to true, manatee isn't in the data path
-            src: true
+            }
         });
     }
 
+    /**
+     * @type {string} Path under which shard metadata such as elections are
+     * stored. e.g. /manatee/com.joyent.1/election
+     */
     this._path = options.path;
+    /** @type {Object} The zk cfg */
     this._zkCfg = options.zk;
+    /** @type {zkplus.client} The ZK client */
     this._zk = null;
 
     (function setupZK() {
@@ -94,17 +114,23 @@ function Client(options) {
         });
     })();
 }
-util.inherits(Client, EventEmitter);
+util.inherits(Manatee, EventEmitter);
 
 module.exports = {
     createClient: function createClient(options) {
-        return (new Client(options));
+        return (new Manatee(options));
     }
 };
 
-//
-// Reads the topology from ZK.
-//
+/**
+ * #@+
+ * @private
+ * @memberOf Shard
+ */
+
+/**
+ * Reads the topology from ZK.
+ */
 Client.prototype._init = function _init() {
     var self = this;
     var log = self._log;
@@ -127,6 +153,9 @@ Client.prototype._init = function _init() {
 };
 
 
+/**
+ * Watch the election path for any changes.
+ */
 Client.prototype._watch = function _watch() {
     var self = this;
     var log = self._log;
@@ -155,11 +184,11 @@ Client.prototype._watch = function _watch() {
     });
 };
 
-//
-// Returns the current DB peer topology as a list of URLs, sorted in descending
-// order: that is, '0' is always primary, '1' is always sync, and '2+' are
-// async slaves
-//
+/**
+ * Returns the current DB peer topology as a list of URLs, sorted in descending
+ * order: that is, '0' is always primary, '1' is always sync, and '2+' are
+ * async slaves
+ */
 Client.prototype._topology = function _topology(cb) {
     var self =  this;
     assert.func(cb, 'callback');
@@ -195,44 +224,49 @@ Client.prototype._topology = function _topology(cb) {
  * and you'll have:
  * [primary, sync, async, ..., asyncn]
  *
- * @param {string[]} children The list of Postgres peers.
+ * @param {string[]} children The array of Postgres peers.
+ * @return {string[]} The array of transformed PG URLs. e.g.
+ * [tcp://postgres@10.0.0.0:5432]
  */
 Client.prototype._childrenToURLs = function (children) {
     var self = this;
+
     function compare(a, b) {
         var seqA = parseInt(a.substring(a.lastIndexOf('-') + 1), 10);
         var seqB = parseInt(b.substring(b.lastIndexOf('-') + 1), 10);
 
         return (seqA - seqB);
     }
+
+    /**
+     * transform an zk election node name into a postgres url.
+     * @param {string} zkNode The zknode, e.g.
+     * 10.77.77.9:pgPort:backupPort:hbPort-0000000057, however previous versions of
+     * manatee will only have 10.77.77.9-0000000057, so we have to be able to
+     * disambiguate between the 2.
+     *
+     * @return {string} The transformed PG URL, e.g.
+     * tcp://postgres@10.0.0.0:5432
+     */
+    function transformPgUrl(zkNode) {
+        var encodedString = zkNode.split('-')[0];
+        var data = encodedString.split(':');
+        /*
+         * if we're using the legacy format, there will not be ':', and as such
+         * the split will return an array of length 1
+         */
+        if (data.length === 1) {
+            return 'tcp://postgres@' + data[0];
+        } else {
+            return 'tcp://postgres@' + data[0] + ':' + data[1];
+        }
+    }
+
     var urls = (children || []).sort(compare).map(function (val) {
-        //arr[idx] = self._transformPgUrl(val);
-        return self._transformPgUrl(val);
+        return transformPgUrl(val);
     });
 
     return urls;
-};
-
-/**
- * transform an zk election node name into a postgres url.
- * @param {string} zkNode The zknode, e.g.
- * 10.77.77.9:pgPort:backupPort:hbPort-0000000057, however previous versions of
- * manatee will only have 10.77.77.9-0000000057, so we have to be able to
- * disambiguate between the 2.
- *
- * @return {string} The transformed pg url, e.g.
- * tcp://postgres@10.0.0.0:5432/postgres
- */
-Client.prototype._transformPgUrl = function (zkNode) {
-    var encodedString = zkNode.split('-')[0];
-    var data = encodedString.split(':');
-    // if we're using the legacy format, there will not be ':', and as such the
-    // split will return an array of length 1
-    if (data.length === 1) {
-        return 'tcp://postgres@' + data[0];
-    } else {
-        return 'tcp://postgres@' + data[0] + ':' + data[1] + '/postgres';
-    }
 };
 
 /**
@@ -312,3 +346,4 @@ Client.prototype._createZkClient = function (opts, cb) {
     return (retry);
 };
 
+/** #@- */
