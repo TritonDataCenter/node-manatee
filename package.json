@@ -8,9 +8,7 @@
         "type": "git",
         "url": "git@github.com:joyent/node-manatee.git"
     },
-    "directories": {
-        "lib": "./lib"
-    },
+    "main": "./manatee.js",
     "engines": {
         "node": ">=0.10"
     },
