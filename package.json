@@ -10,7 +10,7 @@
     },
     "main": "./manatee.js",
     "engines": {
-        "node": ">=0.10"
+        "node": ">=0.8.26"
     },
     "dependencies": {
         "assert-plus": "0.1.0",
