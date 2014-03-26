@@ -139,7 +139,7 @@ Manatee.prototype._init = function _init() {
     self._topology(function (err, urls, children) {
         if (err) {
             log.fatal(err, 'init: error reading from zookeeper');
-            throw new VError(err, 'init: error reading from ZK');
+            throw new verror.VError(err, 'init: error reading from ZK');
         }
         if (!urls || !urls.length) {
             log.error('init: no DB shards available');
@@ -175,7 +175,7 @@ Manatee.prototype._watch = function _watch() {
              * we never emit zk errors up stack, since we'll handle the
              * reconnect ourselves
              */
-            zk.emit('error', new VError(err, 'watch: unsolicited error event'));
+            zk.emit('error', new verror.VError(err, 'watch: unsolicited error event'));
         });
 
         listener.on('children', function(children) {
