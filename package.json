@@ -25,6 +25,6 @@
         "zkplus": "git://github.com/mcavage/node-zkplus.git#9fb0f3"
     },
     "devDependencies": {
-        "nodeunit": "0.8.2"
+        "nodeunit": "git://github.com/yunong/nodeunit.git#master"
     }
 }
