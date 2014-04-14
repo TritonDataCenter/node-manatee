@@ -175,10 +175,11 @@ Manatee.prototype._watch = function _watch() {
              * we never emit zk errors up stack, since we'll handle the
              * reconnect ourselves
              */
-            zk.emit('error', new verror.VError(err, 'watch: unsolicited error event'));
+            zk.emit('error',
+                    new verror.VError(err, 'watch: unsolicited error event'));
         });
 
-        listener.on('children', function(children) {
+        listener.on('children', function (children) {
             log.debug({children: children}, 'Manatee.watch: got children');
             var urls = self._childrenToURLs(children);
             log.info({dbs: urls}, 'Manatee.watch: emitting new db topology');
@@ -232,8 +233,6 @@ Manatee.prototype._topology = function _topology(cb) {
  * [tcp://postgres@10.0.0.0:5432]
  */
 Manatee.prototype._childrenToURLs = function (children) {
-    var self = this;
-
     function compare(a, b) {
         var seqA = parseInt(a.substring(a.lastIndexOf('-') + 1), 10);
         var seqB = parseInt(b.substring(b.lastIndexOf('-') + 1), 10);
