@@ -2,7 +2,7 @@
 
 set -o xtrace
 
-git submodule update
+git submodule update --init
 
 cd ./deps/javascriptlint/
 make install
