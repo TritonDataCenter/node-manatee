@@ -12,6 +12,10 @@ This is the client for [Manatee](http://www.seacow.io). Consumers can use this
 client to determine the current Manatee shard topology. For background on
 Manatee itself, look [here](http://www.seacow.io).
 
+Note this client does not provide you with a handle to an actual PostgreSQL
+connection. It simply returns the topology of the shard. You will need to
+manage the PostgreSQL connections yourself.
+
 # Example
 ```javascript
 var manatee = require('node-manatee');
@@ -41,6 +45,7 @@ client.once('ready', function () {
 
 client.on('topology', function (urls) {
     console.log({urls: urls}, 'topology changed');
+    // insert code here to manage the PG connections.
 });
 
 client.on('error', function (err) {
