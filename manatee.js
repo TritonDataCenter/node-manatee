@@ -76,9 +76,9 @@ function Manatee(options) {
 
     /**
      * @type {string} Path under which shard metadata such as elections are
-     * stored. e.g. /manatee/com.joyent.1/election
+     * stored. e.g. /manatee/com.joyent.1
      */
-    this._path = options.path;
+    this._path = options.path + '/election';
     /** @type {Object} The zk cfg */
     this._zkCfg = options.zk;
     /** @type {zkplus.client} The ZK client */

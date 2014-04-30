@@ -9,14 +9,17 @@
 
 # Overview
 This is the client for [Manatee](http://www.seacow.io). Consumers can use this
-client to determine the current Manatee shard topology.
+client to determine the current Manatee shard topology. For background on
+Manatee itself, look [here](http://www.seacow.io).
 
 # Example
 ```javascript
 var manatee = require('node-manatee');
 
 var client = manatee.createClient({
-   "path": "/manatee/1/election",
+    // Path to the shard's Zookeeper path.
+   "path": "/manatee/1",
+    // node-zkplus config.
    "zk": {
        "connectTimeout": 2000,
        "servers": [{
@@ -32,7 +35,7 @@ var client = manatee.createClient({
        "timeout": 20000
    }
 });
-client.on('ready', function () {
+client.once('ready', function () {
     console.log('manatee client ready');
 });
 
@@ -41,11 +44,23 @@ client.on('topology', function (urls) {
 });
 
 client.on('error', function (err) {
-    console.log({err: err}, 'got client error');
+    console.error({err: err}, 'got client error');
 });
 ```
+
+# Configuration
+The client config is a JSON object which takes the following parameters.
+
+* `path`, which is the Zookeeper path of the specific shard. This should be
+  identical to the `shardPath` parameter in the Manatee server's `sitter.json`
+  config.
+* `zk`, which is the [zkplus](http://mcavage.me/node-zkplus/)
+  configuration [object](http://mcavage.me/node-zkplus/#zkpluscreateclientoptions).
+* An optional `log` object, which is a
+  [bunyan](https://github.com/trentm/node-bunyan) logger.
+
 # API
-The client emits `ready`, `topology`, and `error` events.
+The client emits `ready`, `topology`, and `error` events to consumers.
 
 ## ready
 The `ready` event is emitted once, when the client has been successfully
@@ -59,17 +74,17 @@ Shard topology. It emits an ordered array of urls like so:
 ['tcp://postgres@10.0.0.0:5432', 'tcp://postgres@10.0.0.1:5432', 'tcp://postgres@10.0.0.2:5432']
 ```
 
-Where the first element will be the primary, the second element the sync, and
-the third and additional element asyncs. Only the primary should be used for
-writes. If you want strongly consistent data, then only the primary should be
-used for reads as well. Otherwise, all 3 nodes can be used for reads, but data
-on the sync[1] and async will be slightly out of date compared to the primary.
+Where the first element is the primary, the second element the sync, and the
+third and any additional elements asyncs. Only the primary can be used for
+writes. If you want strongly consistent data, then only use the primary for
+reads as well. Otherwise, all 3 nodes can be used for reads, but data on the
+sync[1] and async will be slightly out of date compared to the primary.
 
 [1] Synchronous replication only ensures that the transaction logs(xlog) are
-persisted to the sync standby when a write request is complete. This doesn't
-mean the xlog has been processed by the sync. Thus the data form the request
-will not be immediately available on the sync until it has processed the xlogs
-from the request.
+persisted to the standby from the primary when a write request is complete.
+This doesn't mean the xlog has been processed by the standby. Thus the data
+from the request will not be immediately available on the standby until it has
+processed the xlogs from the request a short time later.
 
 ## error
 `error` is emitted when there is an unrecoverable error with the client.
