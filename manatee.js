@@ -15,6 +15,7 @@ var backoff = require('backoff');
 var bunyan = require('bunyan');
 var once = require('once');
 var util = require('util');
+var uuid = require('uuid');
 var vasync = require('vasync');
 var verror = require('verror');
 var zkplus = require('zkplus');
@@ -138,11 +139,12 @@ Manatee.prototype._init = function _init() {
     log.debug('init: entered');
     self._topology(function (err, urls, children) {
         if (err) {
-            log.fatal(err, 'init: error reading from zookeeper');
-            throw new verror.VError(err, 'init: error reading from ZK');
+            log.error({err: err}, 'init: error reading from zookeeper');
+            // reconnect here
+            return self._zk.emit('error', err);
         }
         if (!urls || !urls.length) {
-            log.error('init: no DB shards available');
+            log.warn('init: no DB shards available');
         }
 
         self._watch();
@@ -159,10 +161,9 @@ Manatee.prototype._init = function _init() {
 Manatee.prototype._watch = function _watch() {
     var self = this;
     var log = self._log;
-    var zk = self._zk;
 
     log.debug('watch: entered');
-    zk.watch(self._path, {method: 'list'}, function (werr, listener) {
+    self._zk.watch(self._path, {method: 'list'}, function (zk, werr, listener) {
         if (werr) {
             log.fatal(werr, 'watch: failed');
             self.emit('error', werr);
@@ -170,7 +171,7 @@ Manatee.prototype._watch = function _watch() {
         }
 
         listener.once('error', function (err) {
-            log.fatal(err, 'watch: error event fired; exiting');
+            log.error(err, 'watch: error event fired; exiting');
             /*
              * we never emit zk errors up stack, since we'll handle the
              * reconnect ourselves
@@ -186,7 +187,7 @@ Manatee.prototype._watch = function _watch() {
             self.emit('topology', urls);
         });
         log.debug('watch: started');
-    });
+    }.bind(self, self._zk));
 };
 
 /**
