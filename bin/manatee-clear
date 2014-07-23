@@ -91,12 +91,7 @@ var cleanupManatee = function(shardId, zookeeperIp, callback) {
                     return cb(err);
                 });
         },
-        // if primary delete error node
         function deleteErrorNode(arg, cb) {
-            if (!arg.isPrimary) {
-                LOG.debug('not primary');
-                return cb();
-            }
             var path_ = '/manatee/' + shardId + '/error';
             LOG.info({
                 path: path_
