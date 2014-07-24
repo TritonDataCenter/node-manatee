@@ -4,18 +4,19 @@
 set -o errexit
 set -o pipefail
 
-echo 'disabling manatee-sitter'
-svcadm disable manatee-sitter
-
 echo 'WARNING: Removing all postgres data on the zone. If used incorrectly you WILL lose data.'
 echo 'Type MANATEE to continue(N/y)'
 
 read input
 
 if [[ $input == 'MANATEE' ]]; then
+    echo 'disabling manatee-sitter'
+    svcadm disable manatee-sitter
+    echo 'removing pg data'
     rm -rf /manatee/pg/data/*
+    echo 'enabling manatee-sitter'
+    svcadm enable manatee-sitter
 else
-    exit 'Not removing postgres data, exiting'
+    exit 'Not rebuilding manatee, exiting'
 fi
 
-svcadm enable manatee-sitter
