@@ -101,6 +101,14 @@ function Manatee(options) {
                 return;
             }
 
+            if (self.closed) {
+                // If client (re)connect succeeded after manatee was closed,
+                // clean up the ZK resource and pretend it never happened.
+                zk.on('error', function () {});
+                zk.close();
+                return;
+            }
+
             self._zk = zk;
 
             function reconnect() {
@@ -126,6 +134,22 @@ module.exports = {
         return (new Manatee(options));
     }
 };
+
+
+/**
+ * Close connection to zookeeper.
+ */
+Manatee.prototype.close = function close() {
+    if (this._zk) {
+        this._zk.removeAllListeners('close');
+        this._zk.close();
+    }
+    if (!this.closed) {
+      this.closed = true;
+      this.emit('close');
+    }
+};
+
 
 /**
  * #@+
@@ -348,6 +372,10 @@ Manatee.prototype._createZkClient = function (opts, cb) {
             attempt: number,
             delay: delay
         }, 'zookeeper: connection attempted (failed)');
+
+        if (self.closed) {
+            retry.abort();
+        }
     });
 
     return (retry);
