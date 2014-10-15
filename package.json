@@ -29,12 +29,6 @@
     "devDependencies": {
         "nodeunit": "git://github.com/yunong/nodeunit.git#master"
     },
-    "bin": {
-        "manatee-clear": "./bin/manatee-clear",
-        "manatee-history": "./bin/manatee-history",
-        "manatee-lock": "./bin/manatee-lock",
-        "manatee-stat": "./bin/manatee-stat"
-    },
     "scripts": {
         "pretest": "scripts/lint.sh"
     },
