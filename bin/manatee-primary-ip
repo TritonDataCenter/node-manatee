@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+/**
+ * @overview The Manatee client.
+ * @copyright Copyright (c) 2014, Joyent, Inc. All rights reserved.
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *                   _.---.._
+ *      _        _.-' \  \    ''-.
+ *    .'  '-,_.-'   /  /  /       '''.
+ *   (       _                     o  :
+ *    '._ .-'  '-._         \  \-  ---]
+ *                  '-.___.-')  )..-'
+ *                           (_/
+ */
+var bunyan = require('bunyan');
+var fs = require('fs');
+var manatee = require('../manatee');
+var url = require('url');
+var vasync = require('vasync');
+
+var LOG = bunyan.createLogger({
+    level: (process.env.LOG_LEVEL || 'info'),
+    name: 'zkConnTest',
+    serializers: {
+        err: bunyan.stdSerializers.err
+    }
+});
+
+function help(msg) {
+    if (msg) {
+        console.error(msg);
+    }
+    console.error('usage: ' + process.argv.join(' ') +
+                  ' <config file>');
+    process.exit(1);
+}
+
+var configFile = process.argv[2];
+if (!configFile) {
+    help();
+}
+
+var opts = {
+    'configFile': configFile
+};
+var funcs = [];
+
+function checkConfigExists(_, cb) {
+    fs.exists(_.configFile, function (exists) {
+        if (!exists) {
+            return (cb(new Error(_.configFile + ' does not exist')));
+        }
+        return (cb());
+    });
+}
+funcs.push(checkConfigExists);
+
+function readConfigFile(_, cb) {
+    fs.readFile(_.configFile, function (err, str) {
+        if (err) {
+            return (cb(err));
+        }
+        try {
+            _.cfg = JSON.parse(str);
+        } catch (err2) {
+            return (cb(err2));
+        }
+        return (cb());
+    });
+}
+funcs.push(readConfigFile);
+
+function findConfig(_, cb) {
+    //We're looking for anything that has both 'path' and 'zk' fields...
+    // last one found "wins".
+    function rlook(o, subcb) {
+        if (o.path && o.zk) {
+            _.manateeCfg = o;
+            return (subcb());
+        }
+        if (typeof (o) !== 'object') {
+            return (subcb());
+        }
+        vasync.forEachParallel({
+            'inputs': Object.keys(o),
+            'func': function (k, s) {
+                return (rlook(o[k], s));
+            }
+        }, subcb);
+    }
+    rlook(_.cfg, function () {
+        if (!_.manateeCfg) {
+            return (cb(new Error(_.configFile +
+                                 ' did not have manatee config')));
+        }
+        return (cb());
+    });
+}
+funcs.push(findConfig);
+
+function setupClient(_, cb) {
+    _.manateeCfg.log = LOG;
+    _.manatee = manatee.createClient(_.manateeCfg);
+
+    _.manatee.on('error', function (err) {
+        console.log(err, 'manatee: client error');
+        process.exit(1);
+    });
+
+    _.manatee.on('ready', cb);
+}
+funcs.push(setupClient);
+
+function pullPrimary(_, cb) {
+    var top = _.manatee.topology;
+    //Primary is always on top...
+    var u = url.parse(top[0]);
+    _.ip = u.hostname;
+    return (cb());
+}
+funcs.push(pullPrimary);
+
+vasync.pipeline({
+    'arg': opts,
+    'funcs': funcs
+}, function (err) {
+    if (opts.manatee) {
+        opts.manatee.close();
+    }
+    if (err) {
+        console.log(err);
+    } else {
+        console.log(opts.ip);
+    }
+});
+

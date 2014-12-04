@@ -109,3 +109,21 @@ processed the xlogs from the request a short time later.
 ## error
 `error` is emitted when there is an unrecoverable error with the client.
 Consumers should reconnect on error events.
+
+# Testing
+
+To run the tests you must have access to a running zookeeper cluster.  By
+default the tests look for one running on localhost (127.0.0.1).  To point the
+tests at another endpoint, export the `ZK_CONN_STR` environment variable with
+a connection string that represents the set of hosts that can be communicated
+with.  For example:
+
+* `export ZK_CONN_STR="127.0.0.1:2181"`
+* `export ZK_CONN_STR="10.99.99.80:2181,10.99.99.81:2181,10.99.99.82:2181"
+
+Then to run the tests:
+
+```
+npm install
+./node_modules/.bin/nodeunit ./test/client.test.js
+```

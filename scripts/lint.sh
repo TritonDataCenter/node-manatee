@@ -18,6 +18,6 @@ make install
 cd ../..
 
 ./deps/javascriptlint/build/install/jsl --conf ./tools/jsl.node.conf \
-    ./*.js ./test/*.js
+    ./*.js ./test/*.js ./bin/*.js
 
-./deps/jsstyle/jsstyle -f ./tools/jsstyle.conf ./*.js ./test/*.js
+./deps/jsstyle/jsstyle -f ./tools/jsstyle.conf ./*.js ./test/*.js ./bin/*.js

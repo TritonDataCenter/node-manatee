@@ -10,3 +10,4 @@ smf/manifests/*.xml
 *.swp
 *.*~
 *.un~
+/abandoned

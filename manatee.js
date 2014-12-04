@@ -22,7 +22,7 @@ var util = require('util');
 var uuid = require('uuid');
 var vasync = require('vasync');
 var verror = require('verror');
-var zkplus = require('zkplus');
+var zkClient = require('node-zookeeper-client');
 
 var EventEmitter = require('events').EventEmitter;
 
@@ -34,14 +34,14 @@ var EventEmitter = require('events').EventEmitter;
  *
  * @param {object} options Manatee options.
  * @param {Bunyan} [options.log] Bunyan logger.
- * @param {string} options.path ZK election path of the shard.
+ * @param {string} options.path ZK path of the shard, for example:
+ * /manatee/1.moray.coal.joyent.us
  * @param {object} options.zk ZK client options.
  * @param {Bunyan} [options.zk.log] Bunyan logger.
- * @param {object[]} options.zk.servers ZK servers.
- * @param {string} options.zk.servers.host ZK server ip.
- * @param {number} options.zk.servers.port ZK server port.
- * @param {number} options.zk.timeout Time to wait before timing out connect
- * attempt in ms.
+ * @param {object[]} options.zk.connStr ZK conn string.  For example:
+ * 10.99.99.80:2181,10.99.99.81:2181,10.99.99.82:2181
+ * @param {number} options.zk.opts opts sent directly to the
+ * node-zookeeper-client
  *
  * @throws {Error} If the options object is malformed.
  *
@@ -52,7 +52,7 @@ var EventEmitter = require('events').EventEmitter;
  * "tcp://postgres@127.0.0.1:10003/postgres"], where the first element is the
  * primary, the second element is the sync slave, and the third and additional
  * elements are the async slaves.
- * @fires ready When the client is ready and conneted.
+ * @fires ready When the client is ready and connected.
  *
  */
 function Manatee(options) {
@@ -65,7 +65,7 @@ function Manatee(options) {
     EventEmitter.call(this);
 
     /** @type {Bunyan} The bunyan log object */
-    this._log = null;
+    self._log = null;
 
     if (options.log) {
         self._log = options.log.child();
@@ -81,51 +81,27 @@ function Manatee(options) {
 
     /**
      * @type {string} Path under which shard metadata such as elections are
-     * stored. e.g. /manatee/com.joyent.1
+     * stored. e.g. /manatee/1.moray.coal.joyent.us
      */
-    this._path = options.path + '/election';
+    self._electionPath = options.path + '/election';
+    self._clusterStatePath = options.path + '/state';
     /** @type {Object} The zk cfg */
-    this._zkCfg = options.zk;
+    self._zkCfg = options.zk;
     /** @type {zkplus.client} The ZK client */
-    this._zk = null;
+    self._zk = null;
+    self._inited = false;
+    self._closed = false;
+    self._clusterState = null;
+    self._actives = null;
+    self._urls = [];
 
-    (function setupZK() {
-        var zkOpts = {
-            log: options.log,
-            servers: options.zk.servers,
-            timeout: parseInt(options.zk.timeout || 30000, 10)
-        };
-        self._createZkClient(zkOpts, function (zk_err, zk) {
-            if (zk_err) {
-                self.emit('error', zk_err);
-                return;
-            }
+    self.__defineGetter__('topology', function topology() {
+        return (self._urls);
+    });
 
-            if (self.closed) {
-                // If client (re)connect succeeded after manatee was closed,
-                // clean up the ZK resource and pretend it never happened.
-                zk.on('error', function () {});
-                zk.close();
-                return;
-            }
-
-            self._zk = zk;
-
-            function reconnect() {
-                self._zk = null;
-                process.nextTick(setupZK);
-            }
-
-            self._zk.once('close', reconnect);
-            self._zk.on('error', function onZKClientError(err) {
-                self._log.error(err, 'ZooKeeper client error');
-                self._zk.removeAllListeners('close');
-                self._zk.close();
-                reconnect();
-            });
-            self._init();
-        });
-    })();
+    process.nextTick(function init() {
+        self._init();
+    });
 }
 util.inherits(Manatee, EventEmitter);
 
@@ -135,18 +111,22 @@ module.exports = {
     }
 };
 
-
 /**
  * Close connection to zookeeper.
  */
 Manatee.prototype.close = function close() {
-    if (this._zk) {
-        this._zk.removeAllListeners('close');
-        this._zk.close();
+    var self = this;
+    var log = self._log;
+    if (self._zk) {
+        self._zk.removeAllListeners();
+        self._zk.on('error', function (err) {
+            log.error({err: err}, 'err after zk close');
+        });
+        self._zk.close();
     }
-    if (!this.closed) {
-      this.closed = true;
-      this.emit('close');
+    if (!self._closed) {
+      self._closed = true;
+      self.emit('close');
     }
 };
 
@@ -157,99 +137,347 @@ Manatee.prototype.close = function close() {
  * @memberOf Shard
  */
 
+Manatee.prototype._handleTopologyChange = function handleTopologyChange(urls) {
+    var self = this;
+    urls = urls || [];
+
+    //Debounce topology changes
+    var equal = urls.length === self._urls.length;
+    self._urls.forEach(function (u, i) {
+        equal = equal && (u === urls[i]);
+    });
+    if (equal) {
+        return;
+    }
+
+    self._urls = urls;
+    if (self._inited) {
+        self.emit('topology', self._urls);
+    }
+};
+
+Manatee.prototype._handleClusterState = function handleClusterState(res) {
+    var self = this;
+    var log = self._log;
+
+    if (!res || !res.data) {
+        if (!self._inited) {
+            return;
+        }
+
+        //If the cluster state was deleted, we now revert back to using the
+        // election as the topology
+        self._clusterState = null;
+        if (self._actives) {
+            self._handleTopologyChange(self._childrenToUrls(self._actives));
+        }
+        return;
+    }
+
+    res.data = res.data.toString('utf8');
+    log.debug(res, 'manatee: handling cluster state update');
+    try {
+        self._clusterState = JSON.parse(res.data);
+    } catch (err) {
+        var msg = 'error JSON parsing zookeeper cluster state';
+        log.fatal({
+            err: err,
+            data: res.data,
+            zkpath: self._clusterStatePath
+        }, msg);
+        self.emit('error', new Error(msg));
+        return;
+    }
+
+    self._handleTopologyChange(self._clusterStateToUrls(self._clusterState));
+};
+
+Manatee.prototype._handleActive = function handleActive(res) {
+    var self = this;
+    var log = self._log;
+
+    if (!res || !res.children) {
+        self._actives = null;
+        log.debug('no actives, nothing to do');
+        return;
+    }
+
+    //Always keep track of our current actives.
+    self._actives = res.children;
+
+    if (self._clusterState) {
+        //We're relying on the cluster state, so we can just ignore the actives
+        // notification.
+        return;
+    }
+
+    self._handleTopologyChange(self._childrenToUrls(self._actives));
+};
+
+Manatee.prototype._setWatches = function setWatches(zk, cb) {
+    var self = this;
+    var log = self._log;
+
+    log.debug('zk: setting up watches');
+
+    //Watch the cluster state
+    function watchClusterState(_, subcb) {
+        function onWatching(err, res) {
+            if (!err) {
+                self._handleClusterState(res);
+            }
+            return (subcb(err));
+        }
+        self._watchNode(zk,
+                        self._clusterStatePath,
+                        self._handleClusterState.bind(self),
+                        onWatching);
+    }
+
+    //Watch the ephemeral directory
+    function watchEphemeralDirectory(_, subcb) {
+        function onWatching(err, res) {
+            if (!err) {
+                self._handleActive(res);
+            }
+            return (subcb(err));
+        }
+        self._watchNode(zk,
+                        self._electionPath,
+                        self._handleActive.bind(self),
+                        onWatching);
+    }
+
+    vasync.pipeline({
+        'funcs': [
+            watchClusterState,
+            watchEphemeralDirectory
+        ]
+    }, function (err) {
+        log.debug('zk: done setting up watches');
+        return (cb(err));
+    });
+};
+
 /**
- * Reads the topology from ZK.
+ * Inits and manages the zookeeper client.
  */
 Manatee.prototype._init = function _init() {
     var self = this;
     var log = self._log;
 
     log.debug('init: entered');
-    self._topology(function (err, urls, children) {
-        if (err) {
-            log.error({err: err}, 'init: error reading from zookeeper');
-            // reconnect here
-            return self._zk.emit('error', err);
-        }
-        if (!urls || !urls.length) {
-            log.warn('init: no DB shards available');
-        }
 
-        self._watch();
+    var zk = zkClient.createClient(self._zkCfg.connStr, self._zkCfg.opts);
+    var emitReady = once(function emitReadyFunc() {
+        self._inited = true;
         process.nextTick(self.emit.bind(self, 'ready'));
-        log.info({db: urls}, 'Manatee._init: emitting db topology');
-        process.nextTick(self.emit.bind(self, 'topology', urls));
+        process.nextTick(self.emit.bind(self, 'topology', self._urls));
     });
+
+    function resetZkClient() {
+        if (zk) {
+            zk.close();
+        }
+        process.nextTick(setupZkClient);
+    }
+
+    function setupZkClient() {
+        var setWatchesOnce = once(self._setWatches.bind(self));
+
+        //Creator says this is "Java Style"
+        zk.on('state', function (s) {
+            //Just log it.  The other events are called.
+            log.trace(s, 'zk: new state');
+        });
+
+        //Client is connected and ready. This fires whenever the client is
+        // disconnected and reconnected (more than just the first time).
+        zk.on('connected', function () {
+            log.debug(zk.getSessionId(), 'zk: connected');
+            setWatchesOnce(zk, function (err) {
+                if (err) {
+                    log.error(err, 'zk: err setting up data, reiniting');
+                    return (resetZkClient());
+                } else {
+                    self._zk = zk;
+                    emitReady();
+                }
+            });
+        });
+
+        //Client is connected to a readonly server.
+        zk.on('connectedReadOnly', function () {
+            //Don't do anything for this.
+            log.debug('zk: connected read only');
+        });
+
+        //The connection between client and server is dropped.
+        zk.on('disconnected', function () {
+            //Don't do anything for this.
+            log.debug('zk: disconnected');
+        });
+
+        //The client session is expired.
+        zk.on('expired', function () {
+            //This causes the client to "go away".  A new one should be
+            // created after this.
+            log.info('zk: session expired, reiniting.');
+            resetZkClient();
+        });
+
+        //Failed to authenticate with the server.
+        zk.on('authenticationFailed', function () {
+            //Don't do anything for this.
+            log.fatal('zk: auth failed');
+        });
+
+        //Not even sure if this is really an error that would be emitted...
+        zk.on('error', function (err) {
+            //Create a new ZK.
+            log.warn({err: err}, 'zk: unexpected error, reiniting');
+            resetZkClient();
+        });
+
+        zk.connect();
+    }
+
+    setupZkClient();
 };
 
 
 /**
- * Watch the election path for any changes.
+ * Will call the way function on any change to the node or its children.
+ * returns the following structure:
+ *
+ * {
+ *    'data': ...         //can be null
+ *    'children': [ ... ] //can be empty or null)
+ *    'version': ...      //can be null
+ * }
+ *
+ * When all elements are null it means that the node doesn't exist
+ *
+ * Zookeeper watches will only fire once.  That's right.  Once.  So anytime
+ * a watch fires we need to re-register the watch.
+ *
+ * The wat function is called each time something changes.
+ * The cb is only called once, after the watch is initally set with the initial
+ * read.
  */
-Manatee.prototype._watch = function _watch() {
+Manatee.prototype._watchNode = function _watchNode(zk, path, wat, cb) {
     var self = this;
     var log = self._log;
-
-    log.debug('watch: entered');
-    self._zk.watch(self._path, {method: 'list'}, function (zk, werr, listener) {
-        if (werr) {
-            log.fatal(werr, 'watch: failed');
-            self.emit('error', werr);
-            return;
-        }
-
-        listener.once('error', function (err) {
-            log.error(err, 'watch: error event fired; exiting');
-            /*
-             * we never emit zk errors up stack, since we'll handle the
-             * reconnect ourselves
-             */
-            zk.emit('error',
-                    new verror.VError(err, 'watch: unsolicited error event'));
-        });
-
-        listener.on('children', function (children) {
-            log.debug({children: children}, 'Manatee.watch: got children');
-            var urls = self._childrenToURLs(children);
-            log.info({dbs: urls}, 'Manatee.watch: emitting new db topology');
-            self.emit('topology', urls);
-        });
-        log.debug('watch: started');
-    }.bind(self, self._zk));
-};
-
-/**
- * Returns the current DB peer topology as a list of URLs, sorted in descending
- * order: that is, '0' is always primary, '1' is always sync, and '2+' are
- * async slaves
- */
-Manatee.prototype._topology = function _topology(cb) {
-    var self = this;
-    assert.func(cb, 'callback');
+    var currStat = null;
+    var currChildren = null;
+    var currData = null;
 
     cb = once(cb);
 
-    var log = self._log;
-    var zk = self._zk;
-    log.debug({path: self._path}, 'topology: entered');
-    zk.readdir(self._path, function (err, children) {
-        if (err) {
-            log.debug(err, 'topology: failed');
+    function getRes() {
+        return ({
+            data: currData ? currData : null,
+            version: currStat ? currStat.version : null,
+            children: currChildren ? currChildren : null
+        });
+    }
 
-            if (err.code !== zkplus.ZNONODE) {
-                cb(err);
-            } else {
-                setTimeout(function () {
-                    self._topology(cb);
-                }, 1000);
-            }
+    //The event this gives back isn't what it changed to, only that it
+    // changed.
+    function dataWatchFired(event) {
+        if (self._closed) {
             return;
         }
+        return (getData(true));
+    }
+    function childrenWatchFired(event) {
+        if (self._closed) {
+            return;
+        }
+        return (registerChildrenWatch());
+    }
+    function getData(regWatch) {
+        if (self._closed) {
+            return;
+        }
+        zk.getData(path, function (err, data, stat) {
+            var prevStat = currStat;
+            currStat = stat;
+            currData = data;
+            if (err && err.name === 'NO_NODE') {
+                err = null;
+                currChildren = null;
+            } else if (err) {
+                log.
+                return (setTimeout(getData, 5000));
+            }
 
-        var urls = self._childrenToURLs(children);
-        log.debug({urls: urls}, 'topology: done');
-        cb(null, urls, children);
-    });
+            function done() {
+                if (regWatch) {
+                    registerDataWatch();
+                }
+            }
+
+            // Init
+            if (!cb.called) {
+                // If we exist, we need to set up the children watch.
+                if (currStat) {
+                    registerChildrenWatch(done);
+                } else {
+                    cb(null, getRes());
+                    done();
+                }
+                // After Init
+            } else {
+                // Ongoing, if we are newly created, we need to set up the
+                // children watch again since the old disappears into the ether
+                if (!prevStat && currStat && currStat.version === 0) {
+                    registerChildrenWatch(done);
+                } else {
+                    wat(getRes());
+                    done();
+                }
+            }
+        });
+    }
+    function registerChildrenWatch(subcb) {
+        if (self._closed) {
+            return;
+        }
+        zk.getChildren(path, childrenWatchFired, function (err, children) {
+            if (err && err.name === 'NO_NODE') {
+                return;
+            }
+            if (err) {
+                return (setTimeout(registerChildrenWatch, 5000));
+            }
+            currChildren = children;
+            // Init
+            if (!cb.called) {
+                cb(null, getRes());
+                // After Init
+            } else {
+                wat(getRes());
+            }
+            if (subcb) {
+                subcb();
+            }
+        });
+    }
+    function registerDataWatch() {
+        if (self._closed) {
+            return;
+        }
+        zk.exists(path, dataWatchFired, function (err, stat) {
+            //We might have missed a watch while we were processing "other
+            // things" Just fetch the data.  We'll only register a watch when
+            // the watch fires.
+            if (stat && currStat && currStat.version !== stat.version) {
+                getData(false);
+            }
+        });
+    }
+    getData(true);
 };
 
 /**
@@ -261,7 +489,7 @@ Manatee.prototype._topology = function _topology(cb) {
  * @return {string[]} The array of transformed PG URLs. e.g.
  * [tcp://postgres@10.0.0.0:5432]
  */
-Manatee.prototype._childrenToURLs = function (children) {
+Manatee.prototype._childrenToUrls = function childrenToUrls(children) {
     function compare(a, b) {
         var seqA = parseInt(a.substring(a.lastIndexOf('-') + 1), 10);
         var seqB = parseInt(b.substring(b.lastIndexOf('-') + 1), 10);
@@ -301,84 +529,33 @@ Manatee.prototype._childrenToURLs = function (children) {
 };
 
 /**
- * @callback Shard-createZkClientCb
- * @param {Error} error
- * @param {zkplusClient} client zkplus client.
+ * Cluster state looks like this:
+ *
+ * {
+ *   ...
+ *   "primary": {
+ *     "pgUrl": "tcp://postgres@10.77.77.52:5432/postgres",
+ *     ...
+ *   },
+ *   "sync": <same as primary>,
+ *   "async": [ <same as primary>, ... ]
+ *   ...
+ * }
  */
-
-/**
- * Create a zookeeper client.
- * @param {object} options ZK Client options.
- * @param {Bunyan} [options.log] Bunyan logger.
- * @param {object[]} options.servers ZK servers.
- * @param {string} options.servers.host ZK server ip.
- * @param {number} options.servers.port ZK server port.
- * @param {number} options.timeout Time to wait before timing out connect
- * attempt in ms.
- * @param {Shard-createZkClientCb} cb
- */
-Manatee.prototype._createZkClient = function (opts, cb) {
-    var self = this;
-    var log = self._log;
-    assert.object(opts, 'options');
-    assert.arrayOfObject(opts.servers, 'options.servers');
-    assert.number(opts.timeout, 'options.timeout');
-    assert.func(cb, 'callback');
-
-    assert.ok((opts.servers.length > 0), 'options.servers empty');
-    for (var i = 0; i < opts.servers.length; i++) {
-        assert.string(opts.servers[i].host, 'servers.host');
-        assert.number(opts.servers[i].port, 'servers.port');
+Manatee.prototype._clusterStateToUrls = function clusterStateToUrls(cs) {
+    var urls = [];
+    if (cs.primary) {
+        urls.push(cs.primary.pgUrl);
     }
-
-    function _createClient(_, _cb) {
-        var client = zkplus.createClient(opts);
-
-        function onConnect() {
-            client.removeListener('error', onError);
-            log.info('zookeeper: connected');
-            _cb(null, client);
-        }
-
-        function onError(err) {
-            client.removeListener('connect', onConnect);
-            _cb(err);
-        }
-
-
-        client.once('connect', onConnect);
-        client.once('error', onError);
-
-        client.connect();
+    if (cs.sync) {
+        urls.push(cs.sync.pgUrl);
     }
-
-    var retry = backoff.call(_createClient, null, cb);
-    retry.failAfter(Infinity);
-    retry.setStrategy(new backoff.ExponentialStrategy({
-        initialDelay: 1000,
-        maxDelay: 30000
-    }));
-
-    retry.on('backoff', function (number, delay) {
-        var level;
-        if (number === 0) {
-            level = 'info';
-        } else if (number < 5) {
-            level = 'warn';
-        } else {
-            level = 'error';
-        }
-        log[level]({
-            attempt: number,
-            delay: delay
-        }, 'zookeeper: connection attempted (failed)');
-
-        if (self.closed) {
-            retry.abort();
-        }
-    });
-
-    return (retry);
+    if (cs.async) {
+        cs.async.forEach(function (a) {
+            urls.push(a.pgUrl);
+        });
+    }
+    return (urls);
 };
 
 /** #@- */
