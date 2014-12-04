@@ -40,18 +40,12 @@ var client = manatee.createClient({
    "path": "/manatee/1",
     // node-zkplus config.
    "zk": {
-       "connectTimeout": 2000,
-       "servers": [{
-           "host": "172.27.10.97",
-           "port": 2181
-       }, {
-           "host": "172.27.10.90",
-           "port": 2181
-       }, {
-           "host": "172.27.10.101",
-           "port": 2181
-       }],
-       "timeout": 20000
+       "connStr": "172.27.10.97:2181,172.27.10.90:2181,172.27.10.101:2181",
+       "opts" {
+           "sessionTimeout": 60000,
+           "spinDelay": 1000,
+           "retries": 60
+       }
    }
 });
 client.once('ready', function () {
@@ -74,8 +68,10 @@ The client config is a JSON object which takes the following parameters.
 * `path`, which is the Zookeeper path of the specific shard. This should be
   identical to the `shardPath` parameter in the Manatee server's `sitter.json`
   config.
-* `zk`, which is the [zkplus](http://mcavage.me/node-zkplus/)
-  configuration [object](http://mcavage.me/node-zkplus/#zkpluscreateclientoptions).
+* `zk`, which is the
+  [node-zookeeper-client](https://github.com/alexguan/node-zookeeper-client)
+  configuration
+  [object](https://github.com/alexguan/node-zookeeper-client#client-createclientconnectionstring-options).
 * An optional `log` object, which is a
   [bunyan](https://github.com/trentm/node-bunyan) logger.
 
