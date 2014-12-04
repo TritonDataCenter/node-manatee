@@ -115,7 +115,7 @@ a connection string that represents the set of hosts that can be communicated
 with.  For example:
 
 * `export ZK_CONN_STR="127.0.0.1:2181"`
-* `export ZK_CONN_STR="10.99.99.80:2181,10.99.99.81:2181,10.99.99.82:2181"
+* `export ZK_CONN_STR="10.99.99.80:2181,10.99.99.81:2181,10.99.99.82:2181"`
 
 Then to run the tests:
 
