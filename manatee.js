@@ -268,21 +268,21 @@ Manatee.prototype._init = function _init() {
 
     log.debug('init: entered');
 
-    var zk = zkClient.createClient(self._zkCfg.connStr, self._zkCfg.opts);
     var emitReady = once(function emitReadyFunc() {
         self._inited = true;
         process.nextTick(self.emit.bind(self, 'ready'));
         process.nextTick(self.emit.bind(self, 'topology', self._urls));
     });
 
-    function resetZkClient() {
-        if (zk) {
-            zk.close();
-        }
-        process.nextTick(setupZkClient);
-    }
-
     function setupZkClient() {
+        var zk = zkClient.createClient(self._zkCfg.connStr, self._zkCfg.opts);
+
+        var resetZkClientOnce = once(function resetZkClient() {
+            if (zk) {
+                zk.close();
+            }
+            process.nextTick(setupZkClient);
+        });
         var setWatchesOnce = once(self._setWatches.bind(self));
 
         //Creator says this is "Java Style"
@@ -298,7 +298,7 @@ Manatee.prototype._init = function _init() {
             setWatchesOnce(zk, function (err) {
                 if (err) {
                     log.error(err, 'zk: err setting up data, reiniting');
-                    return (resetZkClient());
+                    return (resetZkClientOnce());
                 } else {
                     self._zk = zk;
                     emitReady();
@@ -323,7 +323,7 @@ Manatee.prototype._init = function _init() {
             //This causes the client to "go away".  A new one should be
             // created after this.
             log.info('zk: session expired, reiniting.');
-            resetZkClient();
+            resetZkClientOnce();
         });
 
         //Failed to authenticate with the server.
@@ -336,7 +336,7 @@ Manatee.prototype._init = function _init() {
         zk.on('error', function (err) {
             //Create a new ZK.
             log.warn({err: err}, 'zk: unexpected error, reiniting');
-            resetZkClient();
+            resetZkClientOnce();
         });
 
         zk.connect();
