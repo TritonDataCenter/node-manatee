@@ -44,7 +44,7 @@ var client = manatee.createClient({
        "opts" {
            "sessionTimeout": 60000,
            "spinDelay": 1000,
-           "retries": 60
+           "retries": 2
        }
    }
 });

@@ -320,7 +320,7 @@ exports.clientTest = function (t) {
                         opts: {
                             'sessionTimeout': 5000,
                             'spinDelay': 1000,
-                            'retries': 60
+                            'retries': 2
                         }
                     }
                 });

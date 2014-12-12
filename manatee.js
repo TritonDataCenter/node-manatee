@@ -367,7 +367,6 @@ Manatee.prototype._init = function _init() {
  */
 Manatee.prototype._watchNode = function _watchNode(zk, path, wat, cb) {
     var self = this;
-    var log = self._log;
     var currStat = null;
     var currChildren = null;
     var currData = null;
@@ -408,7 +407,6 @@ Manatee.prototype._watchNode = function _watchNode(zk, path, wat, cb) {
                 err = null;
                 currChildren = null;
             } else if (err) {
-                log.
                 return (setTimeout(getData, 5000));
             }
 
