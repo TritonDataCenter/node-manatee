@@ -276,6 +276,7 @@ Manatee.prototype._init = function _init() {
 
     function setupZkClient() {
         var zk = zkClient.createClient(self._zkCfg.connStr, self._zkCfg.opts);
+        self._zk = zk;
 
         var resetZkClientOnce = once(function resetZkClient() {
             if (zk) {
@@ -300,7 +301,6 @@ Manatee.prototype._init = function _init() {
                     log.error(err, 'zk: err setting up data, reiniting');
                     return (resetZkClientOnce());
                 } else {
-                    self._zk = zk;
                     emitReady();
                 }
             });
