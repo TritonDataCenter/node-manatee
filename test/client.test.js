@@ -14,6 +14,7 @@ var once = require('once');
 var vasync = require('vasync');
 var manatee = require('../manatee');
 var zkClient = require('node-zookeeper-client');
+var test = require('tape').test;
 
 var LOG = bunyan.createLogger({
     level: (process.env.LOG_LEVEL || 'warn'),
@@ -301,7 +302,7 @@ function cycle(opts, cb) {
  * Tests
  */
 
-exports.clientTest = function (t) {
+test('client test', function (t) {
     var opts = {
         't': t
     };
@@ -337,7 +338,7 @@ exports.clientTest = function (t) {
                     t.ok(calledReady, 'ready wasn\'t called first');
                     //Topology should be empty
                     t.ok(top, 'topology');
-                    t.equals(0, top.length);
+                    t.equal(0, top.length);
                     return (cb());
                 });
 
@@ -397,6 +398,6 @@ exports.clientTest = function (t) {
         if (err) {
             t.fail(err.message);
         }
-        t.done();
+        t.end();
     });
-};
+});
