@@ -22,7 +22,7 @@ var util = require('util');
 var uuid = require('uuid');
 var vasync = require('vasync');
 var verror = require('verror');
-var zkClient = require('node-zookeeper-client');
+var zkClient = require('joyent-zookeeper-client');
 
 var EventEmitter = require('events').EventEmitter;
 
