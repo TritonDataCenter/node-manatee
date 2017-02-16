@@ -17,7 +17,7 @@
  */
 var bunyan = require('bunyan');
 var once = require('once');
-var zkClient = require('node-zookeeper-client');
+var zkClient = require('joyent-zookeeper-client');
 
 var LOG = bunyan.createLogger({
     level: (process.env.LOG_LEVEL || 'info'),

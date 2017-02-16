@@ -13,7 +13,7 @@ var bunyan = require('bunyan');
 var once = require('once');
 var vasync = require('vasync');
 var manatee = require('../manatee');
-var zkClient = require('node-zookeeper-client');
+var zkClient = require('joyent-zookeeper-client');
 var test = require('tape').test;
 
 var LOG = bunyan.createLogger({
