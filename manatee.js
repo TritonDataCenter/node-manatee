@@ -17,9 +17,12 @@
 var assert = require('assert-plus');
 var backoff = require('backoff');
 var bunyan = require('bunyan');
+var mod_crypto = require('crypto');
+var mod_mooremachine = require('mooremachine');
+var mod_net = require('net');
+var mod_url = require('url');
 var once = require('once');
 var util = require('util');
-var uuid = require('uuid');
 var vasync = require('vasync');
 var verror = require('verror');
 var zkClient = require('joyent-zookeeper-client');
@@ -108,6 +111,9 @@ util.inherits(Manatee, EventEmitter);
 module.exports = {
     createClient: function createClient(options) {
         return (new Manatee(options));
+    },
+    createPrimaryResolver: function createPrimaryResolver(options) {
+        return (new ManateePrimaryResolver(options));
     }
 };
 
@@ -556,4 +562,156 @@ Manatee.prototype._clusterStateToUrls = function clusterStateToUrls(cs) {
     return (urls);
 };
 
-/** #@- */
+
+/*
+ *
+ */
+function ManateePrimaryResolver(options) {
+    assert.object(options, 'options');
+    assert.object(options.log, 'options.log');
+
+    this.mpr_opts = options;
+    this.mpr_manatee = null;
+    this.mpr_previous = null;
+    this.mpr_primary = null;
+    this.mpr_lastError = null;
+    this.mpr_log = options.log.child({
+        component: 'ManateePrimaryResolver'
+    });
+
+    mod_mooremachine.FSM.call(this, 'stopped');
+}
+util.inherits(ManateePrimaryResolver, mod_mooremachine.FSM);
+
+ManateePrimaryResolver.prototype.state_stopped = function (S) {
+    S.on(this, 'startAsserted', function () {
+        S.gotoState('starting');
+    });
+};
+
+ManateePrimaryResolver.prototype.state_starting = function (S) {
+    var self = this;
+
+    if (this.mpr_manatee === null) {
+        this.mpr_manatee = new Manatee(this.mpr_opts);
+    }
+
+
+    S.on(this.mpr_manatee, 'ready', function () {
+        S.gotoState('running');
+    });
+
+    S.on(this.mpr_manatee, 'error', function (err) {
+        self.mpr_log.warn(err, 'manatee client emitted error');
+        self.mpr_lastError = err;
+        S.gotoState('failed');
+    });
+};
+
+ManateePrimaryResolver.prototype.state_running = function (S) {
+    var self = this;
+
+    S.on(self.mpr_manatee, 'topology', function (urls) {
+        self.mpr_log.trace({
+            urls: urls
+        }, 'manatee topology changed');
+
+        var primary = mod_url.parse(urls[0]);
+
+        assert.strictEqual(primary.protocol, 'tcp:');
+        assert.ok(
+            mod_net.isIPv4(primary.hostname) ||
+            mod_net.isIPv6(primary.hostname));
+
+        self.diffPrimaryAndEmit({
+            name: 'primary',
+            address: primary.hostname,
+            port: parseInt(primary.port, 10)
+        });
+    });
+
+    S.on(self.mpr_manatee, 'error', function (err) {
+        self.mpr_log.warn(err, 'manatee client emitted error');
+        self.mpr_lastError = err;
+        S.gotoState('failed');
+    });
+
+    S.on(self, 'stopAsserted', function () {
+        S.gotoState('stopping');
+    });
+};
+
+ManateePrimaryResolver.prototype.state_stopping = function (S) {
+    S.on(this.mpr_manatee, 'close', function () {
+        S.gotoState('stopped');
+    });
+
+    this.mpr_manatee.close();
+    this.mpr_manatee = null;
+};
+
+ManateePrimaryResolver.prototype.state_failed = function (S) {
+    this.mpr_previous = this.mpr_primary;
+    this.mpr_primary = null;
+
+    S.timeout(1000, function () {
+        S.gotoState('starting');
+    });
+
+    S.on(this, 'stopAsserted', function () {
+        S.gotoState('stopped');
+    });
+};
+
+ManateePrimaryResolver.prototype.start = function () {
+    assert.ok(this.isInState('stopped'));
+    this.emit('startAsserted');
+};
+
+ManateePrimaryResolver.prototype.stop = function () {
+    assert.ok(this.isInState('running') || this.isInState('failed'));
+    this.emit('stopAsserted');
+};
+
+ManateePrimaryResolver.prototype.count = function () {
+    return (this.mpr_primary === null ? 0 : 1);
+};
+
+ManateePrimaryResolver.prototype.getLastError = function () {
+    return (this.mpr_lastError);
+};
+
+ManateePrimaryResolver.prototype.list = function () {
+    var backends = {};
+    if (this.mpr_primary !== null) {
+        backends[this.mpr_primary.key] = this.mpr_primary;
+    }
+    return backends;
+};
+
+ManateePrimaryResolver.prototype.diffPrimaryAndEmit = function (np) {
+    var op = this.mpr_primary;
+
+    if (op !== null &&
+        op.name === np.name &&
+        op.address === np.address &&
+        op.port === np.port) {
+        return;
+    }
+
+    np.key = mod_crypto.randomBytes(9).toString('base64');
+
+    this.mpr_previous = op;
+    this.mpr_primary = np;
+
+    this.mpr_log.info({
+        oldPrimary: this.mpr_previous,
+        newPrimary: this.mpr_primary
+    }, 'Manatee primary has changed');
+
+    this.emit('added', np.key, np);
+
+    if (op !== null) {
+        this.emit('removed', op.key);
+    }
+};
