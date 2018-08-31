@@ -616,6 +616,11 @@ ManateePrimaryResolver.prototype.state_running = function (S) {
             urls: urls
         }, 'manatee topology changed');
 
+        if (urls.length === 0) {
+            /* In a brand-new cluster, there will be nothing yet. */
+            return;
+        }
+
         var primary = mod_url.parse(urls[0]);
 
         assert.strictEqual(primary.protocol, 'tcp:');
